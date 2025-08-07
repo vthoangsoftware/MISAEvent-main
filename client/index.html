@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Open Graph metadata -->
+    <meta property="og:title" content="Ảnh sự kiện | MISA JSC" />
+    <meta property="og:description" content="Một sản phẩm của MISA EMIS" />
+    <meta
+      property="og:image"
+      content="https://misa-event-s3-bucket.s3.ap-southeast-1.amazonaws.com/ogimage.png"
+    />
+    <meta property="og:url" content="https://anhsukien.misa.vn" />
+    <title>Ảnh sự kiện</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+    <!-- Google tag (gtag.js) -->
+    <script
+      async
+      src="https://www.googletagmanager.com/gtag/js?id=G-K9ETK7TCLK"
+    ></script>
+    <script>
+      window.dataLayer = window.dataLayer || []
+      function gtag() {
+        dataLayer.push(arguments)
+      }
+      gtag('js', new Date())
+
+      gtag('config', 'G-K9ETK7TCLK')
+    </script>
+  </body>
+</html>
