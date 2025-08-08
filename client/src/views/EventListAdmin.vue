@@ -91,6 +91,40 @@
           />
         </div>
       </div>
+      
+      <!-- Loading indicator -->
+      <div v-if="isLoading" class="loading-container">
+        <div class="flex flex-col items-center gap-3 p-6">
+          <div class="loading-spinner"></div>
+          <span class="text-gray-600">Đang tải sự kiện...</span>
+        </div>
+      </div>
+      
+      
+      <!-- No events found -->
+      <div v-if="!isLoading && events.length === 0" class="no-events-message">
+        <div class="flex flex-col items-center gap-3 p-6">
+          <i class="pi pi-search text-gray-400 text-3xl"></i>
+          <span class="text-gray-600">Không tìm thấy sự kiện nào</span>
+          <span class="text-sm text-gray-400">Thử thay đổi từ khóa tìm kiếm</span>
+        </div>
+      </div>
+      
+      <!-- Error with retry option -->
+      <div v-if="loadError && !isLoading" class="error-container">
+        <div class="flex flex-col items-center gap-3 p-6">
+          <i class="pi pi-exclamation-triangle text-red-500 text-2xl"></i>
+          <span class="text-red-600">{{ loadError }}</span>
+          <Button 
+            label="Thử lại" 
+            icon="pi pi-refresh" 
+            severity="secondary" 
+            size="small"
+            @click="retryLoad"
+          />
+        </div>
+      </div>
+      
       <!-- <img class="logo-ava" src="@/assets/logos/logo_ava.svg" alt="" /> -->
     </div>
   </div>
@@ -132,17 +166,56 @@ const visibleLogin = ref(true)
 
 const events = ref([]) // Mảng chứa danh sách sự kiện
 const searchText = ref('')
+const isLoading = ref(false)
+const hasMoreData = ref(true)
+const loadError = ref(null)
 let lastEvaluatedKey = null
-const fetchEvents = async () => {
-  var res = await getPagedEvents(50, lastEvaluatedKey, searchText.value, false)
-  events.value = [...events.value, ...res.items]
-  lastEvaluatedKey = res.lastEvaluatedKey
+
+const fetchEvents = async (isRetry = false) => {
+  if (isLoading.value || (!hasMoreData.value && !isRetry)) return
+  
+  try {
+    isLoading.value = true
+    loadError.value = null
+    
+    const res = await getPagedEvents(10, lastEvaluatedKey, searchText.value, false)
+    
+    if (res.items && res.items.length > 0) {
+      events.value = [...events.value, ...res.items]
+      lastEvaluatedKey = res.lastEvaluatedKey
+      
+      // Kiểm tra xem còn dữ liệu không
+      if (!res.lastEvaluatedKey || res.items.length < 10) {
+        hasMoreData.value = false
+      }
+    } else {
+      hasMoreData.value = false
+    }
+  } catch (error) {
+    console.error('Error loading events:', error)
+    loadError.value = error.message || 'Có lỗi xảy ra khi tải dữ liệu'
+    
+    toast.add({
+      severity: 'error',
+      summary: 'Lỗi tải dữ liệu',
+      detail: loadError.value,
+      life: 3000,
+    })
+  } finally {
+    isLoading.value = false
+  }
 }
 
 const searchEvent = async () => {
   lastEvaluatedKey = null
   events.value = []
+  hasMoreData.value = true
+  loadError.value = null
   await fetchEvents()
+}
+
+const retryLoad = async () => {
+  await fetchEvents(true)
 }
 
 const router = useRouter()
@@ -285,6 +358,10 @@ const resetAuth = () => {
   events.value = []
   isAuth.value = false
   visibleLogin.value = true
+  isLoading.value = false
+  hasMoreData.value = true
+  loadError.value = null
+  lastEvaluatedKey = null
 }
 const handleLogin = () => {
   accounts.forEach(user => {
@@ -311,18 +388,24 @@ const handleLogout = () => {
   resetAuth()
 }
 
-const handleScroll = () => {
+// Debounced scroll handler để tránh gọi quá nhiều
+const handleScroll = _.debounce(() => {
+  // Bỏ qua nếu đang loading hoặc không còn dữ liệu
+  if (isLoading.value || !hasMoreData.value) return
+
   // Lấy vị trí cuộn hiện tại
-  let scrollPosition = window.innerHeight + window.scrollY
-
+  const scrollPosition = window.innerHeight + window.scrollY
   // Lấy chiều cao tổng của tài liệu
-  let documentHeight = document.body.offsetHeight
-
-  // Kiểm tra nếu đã cuộn đến cuối trang
-  if (lastEvaluatedKey && scrollPosition >= documentHeight) {
+  const documentHeight = document.body.offsetHeight
+  
+  // Trigger sớm hơn 200px từ cuối trang để UX mượt mà hơn
+  const threshold = 200
+  
+  // Kiểm tra nếu đã cuộn gần cuối trang và còn dữ liệu để load
+  if (lastEvaluatedKey && scrollPosition >= documentHeight - threshold) {
     fetchEvents()
   }
-}
+}, 100) // Debounce 100ms
 
 onMounted(() => {
   const savedUsername = localStorage.getItem('username')
@@ -413,5 +496,46 @@ onUnmounted(() => {
 
 :deep(.p-inputicon) {
   transform: translateY(-6px);
+}
+
+// Loading spinner animation
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #01b58a;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+// Status containers styling
+.loading-container,
+.no-events-message,
+.error-container {
+  grid-column: 1 / -1; // Span across all columns
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 120px;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  margin: 20px 0;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.error-container {
+  background: rgba(254, 242, 242, 0.9);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.no-events-message {
+  background: rgba(249, 250, 251, 0.9);
+  border: 1px solid rgba(156, 163, 175, 0.2);
 }
 </style>

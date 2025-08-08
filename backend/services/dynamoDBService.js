@@ -54,7 +54,8 @@ const saveEventInfo = async (eventInfo) => {
             EventDescription: eventInfo.EventDescription,
             PinCode: eventInfo.PinCode,
             CreatedDate: new Date().toISOString(),
-            CreatedBy: eventInfo.CreatedBy
+            CreatedBy: eventInfo.CreatedBy,
+            EventStatus: "ACTIVE"
         },
     };
     await dynamoDbClient.send(new PutCommand(params));
@@ -66,7 +67,7 @@ const updateEventInfo = async (eventInfo) => {
         Key: {
             EventId: eventInfo.EventId, // Khóa chính để xác định event cần sửa
         },
-        UpdateExpression: 'SET CollectionId = :collectionId, EventName = :eventName, EventTime = :eventTime, EventDescription = :eventDescription, PinCode = :pinCode, UpdatedDate = :updatedDate',
+        UpdateExpression: 'SET CollectionId = :collectionId, EventName = :eventName, EventTime = :eventTime, EventDescription = :eventDescription, PinCode = :pinCode, UpdatedDate = :updatedDate, EventStatus = :eventStatus',
         ExpressionAttributeValues: {
             ':collectionId': eventInfo.CollectionId,
             ':eventName': eventInfo.EventName,
@@ -74,6 +75,7 @@ const updateEventInfo = async (eventInfo) => {
             ':eventDescription': eventInfo.EventDescription,
             ':pinCode': eventInfo.PinCode || '',
             ':updatedDate': new Date().toISOString(), // Thời gian cập nhật
+            ':eventStatus': 'ACTIVE', // Đảm bảo EventStatus được preserve
         },
         ReturnValues: 'UPDATED_NEW', // Tùy chọn trả về các giá trị vừa được cập nhật
     };
@@ -89,57 +91,80 @@ const updateEventInfo = async (eventInfo) => {
 };
 
 const getPagedEvents = async (limit, lastEvaluatedKey, searchText, isAdmin, username) => {
-    const params = {
-        TableName: 'misa-event',
-        Limit: limit,
-        ProjectionExpression: '#EventName, #EventDescription, #EventTime, #EventThumbnail, #EventId, #CreatedBy', // Liệt kê các trường bạn muốn lấy
-        ExpressionAttributeNames: {
-            '#EventName': 'EventName',
-            '#EventDescription': 'EventDescription',
-            '#EventTime': 'EventTime',
-            '#EventThumbnail': 'EventThumbnail',
-            '#EventId': 'EventId',
-            '#CreatedBy': 'CreatedBy'
-        }
-    };
-
-    // Nếu là admin, thêm trường PinCode vào ProjectionExpression
-    if (isAdmin) {
-        params.ProjectionExpression += ', #PinCode'; // Thêm trường PinCode
-        params.ExpressionAttributeNames['#PinCode'] = 'PinCode'; // Định nghĩa tên trường PinCode
-    }
-
-    // Nếu có lastEvaluatedKey, thêm vào params
-    if (lastEvaluatedKey) {
-        params.ExclusiveStartKey = lastEvaluatedKey;
-    }
-
     try {
-        const response = await dynamoDbClient.send(new ScanCommand(params));
+        // Sử dụng Scan và sort ở application level cho kết quả chính xác nhất
+        const scanParams = {
+            TableName: 'misa-event',
+            ProjectionExpression: '#EventName, #EventDescription, #EventTime, #EventThumbnail, #EventId, #CreatedBy, #EventStatus',
+            ExpressionAttributeNames: {
+                '#EventName': 'EventName',
+                '#EventDescription': 'EventDescription',
+                '#EventTime': 'EventTime',
+                '#EventThumbnail': 'EventThumbnail',
+                '#EventId': 'EventId',
+                '#CreatedBy': 'CreatedBy',
+                '#EventStatus': 'EventStatus'
+            }
+        };
 
-        // Nếu có searchText, lọc kết quả ở phía ứng dụng
-        let items = response.Items || [];
+        // Nếu là admin, thêm trường PinCode
+        if (isAdmin) {
+            scanParams.ProjectionExpression += ', #PinCode';
+            scanParams.ExpressionAttributeNames['#PinCode'] = 'PinCode';
+        }
 
+        // Lấy tất cả data để sort chính xác
+        let allItems = [];
+        let scanResponse;
+        do {
+            scanResponse = await dynamoDbClient.send(new ScanCommand(scanParams));
+            allItems = allItems.concat(scanResponse.Items || []);
+            scanParams.ExclusiveStartKey = scanResponse.LastEvaluatedKey;
+        } while (scanResponse.LastEvaluatedKey);
+
+        // Filter chỉ các record có EventStatus = 'ACTIVE'
+        allItems = allItems.filter(item => item.EventStatus === 'ACTIVE');
+
+        // Filter theo username nếu có
         if (username) {
-            items = items.filter(item => item.CreatedBy === username);
+            allItems = allItems.filter(item => item.CreatedBy === username);
         }
 
-        if (items.length) {
-            // Sắp xếp theo EventTime giảm dần
-            items.sort((a, b) => new Date(b.EventTime) - new Date(a.EventTime));
-        }
+        // Filter theo searchText nếu có
         if (searchText) {
             const lowerCaseSearchText = removeDiacritics(searchText);
-            items = items.filter(item =>
+            allItems = allItems.filter(item =>
                 removeDiacritics(item.EventName).includes(lowerCaseSearchText) ||
                 removeDiacritics(item.EventDescription).includes(lowerCaseSearchText)
             );
         }
 
+        // Sort tất cả theo EventTime descending (mới nhất lên đầu)
+        allItems.sort((a, b) => new Date(b.EventTime) - new Date(a.EventTime));
+
+        // Implement pagination manually với lastEvaluatedKey
+        let startIndex = 0;
+        if (lastEvaluatedKey) {
+            const keyEventId = typeof lastEvaluatedKey === 'string' ? lastEvaluatedKey : lastEvaluatedKey.EventId;
+            const foundIndex = allItems.findIndex(item => item.EventId === keyEventId);
+            startIndex = foundIndex >= 0 ? foundIndex + 1 : 0;
+        }
+
+        // Lấy items cho page hiện tại
+        const items = allItems.slice(startIndex, startIndex + limit);
+
+        // Remove EventStatus field khỏi response (không cần thiết cho client)
+        items.forEach(item => delete item.EventStatus);
+
+        // Tạo lastEvaluatedKey cho pagination tiếp theo
+        const nextLastEvaluatedKey = items.length === limit && startIndex + limit < allItems.length ? 
+            { EventId: items[items.length - 1].EventId } : null;
+
         return {
             items,
-            lastEvaluatedKey: response.LastEvaluatedKey || null, // Trả về khóa cuối cùng nếu có
+            lastEvaluatedKey: nextLastEvaluatedKey,
         };
+
     } catch (error) {
         console.error('Error fetching paged events:', error);
         throw new Error('Could not fetch events');
